@@ -1,0 +1,12 @@
+[
+      {
+    "name": "timestamp",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "logs",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  }
+]
