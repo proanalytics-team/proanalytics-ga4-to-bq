@@ -1,0 +1,32 @@
+As long as your Server container is running in the same GCP project as the BigQuery table, you’re all set. 
+You don’t need to do anything special in terms of authentication, as the default service account of App Engine has full access to any BigQuery tables added to the project.
+
+If you want to write to a BigQuery table in another GCP project, you need to do the following:
+
+1. Locate the App Engine default service account (under APIs & Services / Credentials) of the Server container project.
+2. Copy the email address of this service account to the clipboard.
+3. In the IAM of the GCP project with the BigQuery table, add a new member.
+4. Set the email address of the member to the email address in the clipboard.
+5. Set the role of this new member to BigQuery Data Editor.
+
+
+If the server is deployed outside of GCP, you need to take the following steps (you may need to involve dev-ops to complete points 3-5):
+
+1. Create a Service account that will have access to BigQuery Data Editor:
+APIs&Services → Credentials → Create Credentials → Service account
+2. Select the created service account from the list and add the key:
+Keys → Add key → create new key
+3. Download the key file and add it to the directory with your docker-compose.yaml on the server.
+4. Add the following configurations in docker-compose.yaml:
+
+sst:   
+   volumes:
+      - ./[SERVICE_ACCOUNT_KEY_FILE_NAME]:/app/google-creds.json
+   environment:
+      <<: *common-variables
+      PREVIEW_SERVER_URL: 'https://mywebsite.com/metrics/preview'
+      GOOGLE_APPLICATION_CREDENTIALS: '/app/google-creds.json'
+      GOOGLE_CLOUD_PROJECT: '[GOOGLE_CLOUD_PROJECT]'
+
+
+5. Run docker compose up -d
