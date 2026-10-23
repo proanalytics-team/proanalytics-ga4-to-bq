@@ -16,7 +16,7 @@ homepage: "https://proanalytics.team/"
 documentation: "https://proanalytics.team/blog/export-data-ga4-from-ss-gtm-directly-to-bigquery?utm_source=github&utm_medium=referral&utm_campaign=ga4-to-bq&utm_content=doc"
 versions:
   # Latest version
-  - sha: REPLACE_WITH_COMMIT_SHA
+  - sha: 4c0b219e8d93cca2355b816e7490fdcf59c0e30a
     changeNotes: |2
       Fix original_fpid parsing: no hardcoded FPID2.2. prefix.
       Add optional original_cid_ss field.
