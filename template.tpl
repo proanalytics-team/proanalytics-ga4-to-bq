@@ -1,4 +1,4 @@
-﻿___TERMS_OF_SERVICE___
+___TERMS_OF_SERVICE___
 
 By creating or modifying this file you agree to Google Tag Manager's Community
 Template Gallery Developer Terms of Service available at
@@ -23,7 +23,7 @@ ___INFO___
     "ANALYTICS",
     "DATA_WAREHOUSING"
   ],
-  "description": "Send events to BigQuery using the Streaming Insert API. The table schema configuration can be found from the tag\u0027s GitHub page:",
+  "description": "Send events to BigQuery using the Streaming Insert API. A detailed description of the solution is available in the article: https://proanalytics.team/blog/export-data-ga4-from-ss-gtm-directly-to-bigquery?utm_source=ss_gtm&utm_medium=ga4-to-bq",
   "containerContexts": [
     "SERVER"
   ]
@@ -39,7 +39,7 @@ ___TEMPLATE_PARAMETERS___
     "displayName": "BigQuery Project Id",
     "simpleValueType": true,
     "alwaysInSummary": true,
-    "help": "The id of the BigQuery project where the data is sent to."
+    "help": "The id of the BigQuery project where the data is sent to.\nDepending on which project you want to write data to, you may need additional authentication settings: https://github.com/proanalytics-team/proanalytics-ga4-to-bq/blob/main/Authentication.txt"
   },
   {
     "type": "TEXT",
@@ -55,7 +55,7 @@ ___TEMPLATE_PARAMETERS___
     "displayName": "BigQuery Table Id",
     "simpleValueType": true,
     "alwaysInSummary": true,
-    "help": "The id of the BigQuery table where the data is sent to."
+    "help": "The id of the BigQuery table where the data is sent to. \nThe table schema configuration can be found from the tag's GitHub page: https://github.com/proanalytics-team/proanalytics-ga4-to-bq/blob/main/schema.txt"
   },
   {
     "type": "TEXT",
@@ -92,6 +92,65 @@ ___TEMPLATE_PARAMETERS___
     "simpleValueType": true,
     "alwaysInSummary": true,
     "help": "By default, this field should remain empty. If you modify the template, it’s best to create a separate table with a defined schema to ensure that data transmission to the main table is not disrupted."
+  },
+  {
+    "type": "TEXT",
+    "name": "customVariableValue",
+    "displayName": "original_cid_ss (optional)",
+    "simpleValueType": true,
+    "help": "By default, this field should remain empty. If you want to track the original cid (form _ga), you need to enter the Cookie value(_ga) variable here. Writes the id in the <strong>original_cid_ss</strong> string field."
+  },
+  {
+    "type": "GROUP",
+    "name": "excludeParamsGroup",
+    "displayName": "Event parameters to exclude",
+    "groupStyle": "ZIPPY_CLOSED",
+    "subParams": [
+      {
+        "type": "SIMPLE_TABLE",
+        "name": "excludeParams",
+        "displayName": "",
+        "simpleTableColumns": [
+          {
+            "defaultValue": "",
+            "displayName": "Parameter name (add * at the end to exclude all parameters with this prefix, e.g. x-ga-*)",
+            "name": "name",
+            "type": "TEXT"
+          }
+        ],
+        "newRowButtonText": "Add parameter",
+        "help": "Listed parameters are not written to event_params. A name ending with * is a prefix match, for example \"x-ga-*\" excludes all technical x-ga- parameters. user_properties and items are not affected."
+      }
+    ]
+  },
+  {
+    "type": "GROUP",
+    "name": "addParamsGroup",
+    "displayName": "Event parameters to add / edit",
+    "groupStyle": "ZIPPY_CLOSED",
+    "subParams": [
+      {
+        "type": "SIMPLE_TABLE",
+        "name": "addParams",
+        "displayName": "",
+        "simpleTableColumns": [
+          {
+            "defaultValue": "",
+            "displayName": "Parameter name",
+            "name": "name",
+            "type": "TEXT"
+          },
+          {
+            "defaultValue": "",
+            "displayName": "Value",
+            "name": "value",
+            "type": "TEXT"
+          }
+        ],
+        "newRowButtonText": "Add parameter",
+        "help": "Listed parameters are written to event_params. If the event already has a parameter with the same name, its value is replaced. Rows with an empty name or value are ignored. Applied after the exclusions."
+      }
+    ]
   }
 ]
 
@@ -102,6 +161,7 @@ const log = require('logToConsole');
 const BigQuery = require('BigQuery');
 const makeString = require('makeString');
 const makeInteger = require('makeInteger');
+const makeNumber = require('makeNumber');
 const JSON = require('JSON');
 const getTimestampMillis = require('getTimestampMillis');
 const getAllEventData = require('getAllEventData');
@@ -225,6 +285,29 @@ const predefinedItemFields = [
   "creative_slot"
 ];
 
+// Item keys sent by GA4 under a different name than the schema column
+// (GA4 BigQuery export also stores "index" as item_list_index)
+const itemFieldAliases = {
+  index: "item_list_index"
+};
+
+// Predefined item columns with a numeric type in the schema
+const integerItemFields = ["quantity", "item_list_index"];
+const floatItemFields = [
+  "price_in_usd",
+  "price",
+  "item_revenue_in_usd",
+  "item_revenue",
+  "item_refund_in_usd",
+  "item_refund"
+];
+
+// Parses a number; returns null if the value is not numeric
+function parseItemNumber(value) {
+  var num = makeNumber(value);
+  return num !== num ? null : num; // NaN check
+}
+
 // Function to process `items`
 function extractItems(eventData) {
   if (!eventData.items || getType(eventData.items) !== 'array') {
@@ -234,12 +317,35 @@ function extractItems(eventData) {
   eventData.items.forEach(function (item) {
     var processedItem = {};
 
-    Object.keys(item).forEach(function (key) {
-      var value = item[key];
+    Object.keys(item).forEach(function (originalKey) {
+      var key = originalKey;
+      var value = item[originalKey];
 
-      if (getType(predefinedItemFields) === 'array' && predefinedItemFields.indexOf(key) > -1) {
+      // Rename aliased keys unless the target column is sent explicitly
+      if (itemFieldAliases[key] && !isValidValue(item[itemFieldAliases[key]])) {
+        key = itemFieldAliases[key];
+      }
+
+      if (floatItemFields.indexOf(key) > -1) {
+        // FLOAT columns keep the fractional part
+        processedItem[key] = isValidValue(value) ? parseItemNumber(value) : null;
+      }
+
+      else if (integerItemFields.indexOf(key) > -1) {
+        var intNum = isValidValue(value) ? parseItemNumber(value) : null;
+        if (intNum !== null && makeInteger(intNum) !== intNum) {
+          // Fractional value does not fit an INTEGER column: keep it as is in item_params instead of truncating
+          processedItem.item_params = processedItem.item_params || [];
+          processedItem.item_params.push({ key: key, value: { float_value: intNum } });
+          processedItem[key] = null;
+        } else {
+          processedItem[key] = intNum;
+        }
+      }
+
+      else if (predefinedItemFields.indexOf(key) > -1) {
         processedItem[key] = isValidValue(value) ? changeDataType(value) : null;
-      } 
+      }
 
       else if (isValidValue(value)) {
         var param = {
@@ -266,10 +372,51 @@ function extractItems(eventData) {
 }
 
 
+// Checks the key against the "Event parameters to exclude" table; a name ending with * is a prefix match
+function isExcludedParam(key) {
+  if (getType(data.excludeParams) !== 'array') return false;
+  for (var i = 0; i < data.excludeParams.length; i++) {
+    var name = data.excludeParams[i].name;
+    if (!isValidValue(name)) continue;
+    name = makeString(name).trim();
+    if (name.charAt(name.length - 1) === '*') {
+      if (key.indexOf(name.substring(0, name.length - 1)) === 0) return true;
+    } else if (key === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Applies the "Event parameters to add / edit" table: replaces an existing event_params key or appends a new one
+function applyAddedParams() {
+  if (getType(data.addParams) !== 'array') return;
+  data.addParams.forEach(function (item) {
+    if (!isValidValue(item.name) || !isValidValue(item.value)) return;
+    var name = makeString(item.name).trim();
+    if (name === '') return;
+
+    var param = { key: name, value: {} };
+    var fieldType = identifyDataType(item.value);
+    if (fieldType === 'int_value') {
+      param.value.int_value = changeDataType(item.value);
+    } else if (fieldType === 'float_value') {
+      param.value.float_value = changeDataType(item.value);
+    } else {
+      param.value.string_value = changeDataType(item.value);
+    }
+
+    row.event_params = row.event_params.filter(function (p) {
+      return p.key !== name;
+    });
+    row.event_params.push(param);
+  });
+}
+
 // Function to process `event_params`
 function extractEventParams(eventData) {
   Object.keys(eventData).forEach((key) => {
-    if (key !== 'items' && key !== 'x-ga-mp2-user_properties'&& key !== 'event_name' && key !== 'client_id' && key !== 'ga_session_id') {
+    if (key !== 'items' && key !== 'x-ga-mp2-user_properties'&& key !== 'event_name' && key !== 'client_id' && key !== 'ga_session_id' && !isExcludedParam(key)) {
       const value = eventData[key];
       if (isValidValue(value)) {
         const param = {
@@ -295,24 +442,32 @@ function extractEventParams(eventData) {
   });
   }
 
-// Add original_fpid with processing
-  if (data.original_fpid) {
-    var rawFpid = data.original_fpid.replace("FPID2.2.", "");// Remove prefix FPID2.2.
-    var decodedFpid = decodeURIComponentPolyfill(rawFpid);// Decode the value
-    log("Processed original_fpid: " + decodedFpid);
+// --- Helpers ---
+// Removes the FPID prefix up to and including the second dot (e.g. "FPID2.2.", "FPID2.3."),
+// so the version digits are not hardcoded
+function stripPrefixUpToSecondDot(s) {
+  if (s === undefined || s === null) return '';
+  s = '' + s;
 
-    var originalFpidParam = { key: "original_fpid", value: {} };
-    originalFpidParam.value.string_value = makeString(decodedFpid);
-    row.event_params.push(originalFpidParam);
-  } else {
-    log("original_fpid is missing or undefined.");
+  // Remove wrapping quotes, if any
+  if (s.length >= 2 && s.charAt(0) === '"' && s.charAt(s.length - 1) === '"') {
+    s = s.substring(1, s.length - 1);
   }
 
-                               
+  var firstDot = s.indexOf('.');
+  if (firstDot === -1) return s; // no dots: return as is
+
+  var secondDot = s.indexOf('.', firstDot + 1);
+  if (secondDot === -1) return s; // only one dot: return as is
+
+  return s.substring(secondDot + 1);
+}
 
 // Function to decode encoded URI components
-function decodeURIComponentPolyfill(encodedStr) {
-  return encodedStr
+function decodeURIComponentPolyfillSafe(encodedStr) {
+  if (encodedStr === undefined || encodedStr === null) return '';
+  var s = '' + encodedStr;
+  return s
     .split("%2B").join("+")
     .split("%2F").join("/")
     .split("%3D").join("=")
@@ -321,6 +476,41 @@ function decodeURIComponentPolyfill(encodedStr) {
     .split("%2C").join(",")
     .split("%3B").join(";")
     .split("%40").join("@");
+}
+
+// Add original_fpid with processing
+if (data.original_fpid) {
+  var fpidCore = stripPrefixUpToSecondDot(data.original_fpid); // Remove dynamic prefix
+  var decodedFpid = decodeURIComponentPolyfillSafe(fpidCore); // Decode the value
+  log("Processed original_fpid (stripped+decoded): " + decodedFpid);
+
+  var originalFpidParam = { key: "original_fpid", value: {} };
+  originalFpidParam.value.string_value = makeString(decodedFpid);
+  row.event_params.push(originalFpidParam);
+} else {
+  log("original_fpid is missing or undefined.");
+}
+
+// Add original_cid_ss (optional, value of the _ga cookie) to event_params
+if (isValidValue(data.customVariableValue)) {
+  const customParam = {
+    key: "original_cid_ss",
+    value: {}
+  };
+  const customFieldType = identifyDataType(data.customVariableValue);
+
+  if (customFieldType === 'int_value') {
+    customParam.value.int_value = changeDataType(data.customVariableValue);
+  } else if (customFieldType === 'float_value') {
+    customParam.value.float_value = changeDataType(data.customVariableValue);
+  } else {
+    customParam.value.string_value = changeDataType(data.customVariableValue);
+  }
+
+  row.event_params.push(customParam);
+  log("original_cid_ss added to event_params: " + data.customVariableValue);
+} else {
+  log("original_cid_ss is missing or empty.");
 }
 
 // Processing `user_properties`
@@ -340,12 +530,12 @@ function extractUserProperties(eventData) {
         const fieldType = identifyDataType(value);
 
          // Explicitly assign data type key
-        if (fieldType === 'string_value') {
-          param.value.string_value = changeDataType(value);
-        } else if (fieldType === 'int_value') {
+        if (fieldType === 'int_value') {
           param.value.int_value = changeDataType(value);
         } else if (fieldType === 'float_value') {
           param.value.float_value = changeDataType(value);
+        } else {
+          param.value.string_value = changeDataType(value);
         }
 
         row.user_properties.push(param);
@@ -363,6 +553,8 @@ if (eventData && typeof eventData === 'object') {
   extractEventParams(eventData);
   extractUserProperties(eventData);
 }
+
+applyAddedParams();
 
 // Log the final object
 log("Final row: " + JSON.stringify(row));
@@ -399,7 +591,6 @@ BigQuery.insert(connectionInfo, [row], options, data.gtmOnSuccess, (err) => {
     data.gtmOnSuccess();
   }
 });
-    data.gtmOnFailure();
   } else {
     log("BigQuery insert successful");
     data.gtmOnSuccess();

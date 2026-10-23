@@ -13,7 +13,17 @@
 # limitations under the License.
 
 homepage: "https://proanalytics.team/"
-documentation: "https://github.com/proanalytics-team/proanalytics-ga4-to-bq/tree/main"
+documentation: "https://proanalytics.team/blog/export-data-ga4-from-ss-gtm-directly-to-bigquery?utm_source=github&utm_medium=referral&utm_campaign=ga4-to-bq&utm_content=doc"
 versions:
+  # Latest version
+  - sha: REPLACE_WITH_COMMIT_SHA
+    changeNotes: |2
+      Fix original_fpid parsing: no hardcoded FPID2.2. prefix.
+      Add optional original_cid_ss field.
+      Add tables to exclude and add/edit event parameters (supports x-ga-* prefix).
+      Cast numeric item fields to schema types, map item index to item_list_index.
+      Fix error-log fallback result handling.
+      Add authentication, schema and article links to the template texts.
+  # Older versions
   - sha: fa5a4837793853c5d4d21086fc3d4fe0680dcf5c
     changeNotes: Initial Version
